@@ -1,1 +1,342 @@
-index.html
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>JTEC XJ Log Dashboard</title>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.4/dist/chart.umd.min.js"></script>
+<style>
+:root { color-scheme: dark; }
+* { box-sizing: border-box; }
+body {
+  margin: 0;
+  background: #09111f;
+  color: #edf4ff;
+  font: 15px system-ui, sans-serif;
+}
+main {
+  max-width: 1180px;
+  margin: auto;
+  padding: 24px;
+}
+header {
+  display: flex;
+  justify-content: space-between;
+  gap: 18px;
+  align-items: center;
+  border-bottom: 1px solid #29415f;
+  padding: 12px 0 20px;
+}
+h1 {
+  font-size: clamp(32px, 6vw, 64px);
+  line-height: 1;
+  margin: 48px 0 14px;
+}
+h2 {
+  font-size: 18px;
+}
+p {
+  color: #a8bad2;
+}
+.toolbar {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin: 26px 0;
+}
+button, .file, select {
+  border: 1px solid #49688f;
+  border-radius: 8px;
+  background: #172a46;
+  color: #fff;
+  padding: 10px 14px;
+  font: inherit;
+  cursor: pointer;
+}
+.file input { display: none; }
+.cards {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 12px;
+}
+.card, .panel {
+  background: #101e33;
+  border: 1px solid #29415f;
+  border-radius: 12px;
+  padding: 18px;
+  margin-bottom: 18px;
+}
+.card small, .muted {
+  color: #8fa5c2;
+  text-transform: uppercase;
+  font-size: 11px;
+  letter-spacing: .08em;
+}
+.card strong {
+  display: block;
+  font-size: 28px;
+  margin: 8px 0;
+}
+.grid {
+  display: grid;
+  grid-template-columns: 1.5fr 1fr;
+  gap: 18px;
+}
+.chart {
+  height: 360px !important;
+  width: 100% !important;
+}
+table {
+  border-collapse: collapse;
+  width: 100%;
+}
+th, td {
+  text-align: left;
+  padding: 10px;
+  border-bottom: 1px solid #29415f;
+}
+.alert {
+  border-left: 4px solid #56d3a3;
+  background: #192d45;
+  padding: 11px;
+  margin: 8px 0;
+}
+.warn {
+  border-color: #efbd5b;
+}
+.drop {
+  border: 1px dashed #56d3a3;
+  border-radius: 10px;
+  padding: 22px;
+  text-align: center;
+  color: #9fb5d0;
+}
+.drop.over {
+  background: #173c56;
+}
+@media (max-width: 760px) {
+  .cards { grid-template-columns: repeat(2, 1fr); }
+  .grid { display: block; }
+  header { display: block; }
+  .file { display: inline-block; margin-top: 12px; }
+}
+</style>
+</head>
+<body>
+<main>
+  <header>
+    <div>
+      <strong>JTEC XJ Log Dashboard</strong>
+      <div class="muted">HP Tuners CSV viewer · 2000–2001 Cherokee XJ</div>
+    </div>
+    <label class="file">
+      Import CSV
+      <input id="file" type="file" accept=".csv,.txt">
+    </label>
+  </header>
+
+  <h1>See your calibration data.</h1>
+  <p>Import a recorded HP Tuners scanner log. Everything is processed in this browser; no file is uploaded.</p>
+
+  <div id="drop" class="drop">Drop an HP Tuners CSV here</div>
+
+  <div class="toolbar">
+    <select id="metric">
+      <option value="rpm">RPM</option>
+      <option value="map">MAP</option>
+      <option value="ect">Coolant temperature</option>
+      <option value="afr">AFR / lambda</option>
+      <option value="stft">STFT</option>
+      <option value="spark">Spark advance</option>
+    </select>
+    <button id="demo">Load demo preview</button>
+    <button id="clear">Clear</button>
+  </div>
+
+  <div class="cards" id="cards"></div>
+
+  <section class="panel">
+    <h2>Selected channel</h2>
+    <canvas id="chart" class="chart"></canvas>
+  </section>
+
+  <div class="grid">
+    <section class="panel">
+      <h2>Channel summary</h2>
+      <table>
+        <thead>
+          <tr>
+            <th>Channel</th>
+            <th>Min</th>
+            <th>Average</th>
+            <th>Max</th>
+            <th>N</th>
+          </tr>
+        </thead>
+        <tbody id="summary"></tbody>
+      </table>
+    </section>
+
+    <section class="panel">
+      <h2>Basic checks</h2>
+      <div id="alerts" class="muted">Load a log to run checks.</div>
+    </section>
+  </div>
+</main>
+
+<script>
+const state = { h: [], r: [], chart: null };
+const $ = id => document.getElementById(id);
+const aliases = {
+  rpm: ['rpm', 'engine speed'],
+  map: ['map', 'manifold'],
+  ect: ['ect', 'coolant'],
+  afr: ['afr', 'lambda', 'air fuel'],
+  stft: ['stft', 'short term'],
+  spark: ['spark', 'timing'],
+  voltage: ['voltage', 'battery']
+};
+
+const norm = x => String(x).toLowerCase().replace(/[^a-z0-9 ]/g, '');
+
+function col(c) {
+  return state.h.find(h => (aliases[c] || [c]).some(a => norm(h).includes(a)));
+}
+
+function values(c) {
+  const h = col(c);
+  return h ? state.r.map(x => Number(String(x[h]).replace(',', '.'))).filter(Number.isFinite) : [];
+}
+
+function stat(v) {
+  return v.length ? {
+    min: Math.min(...v),
+    max: Math.max(...v),
+    avg: v.reduce((a, b) => a + b, 0) / v.length
+  } : null;
+}
+
+function parse(text) {
+  const lines = text.trim().split(/\r?\n/).filter(Boolean);
+  if (!lines.length) return;
+
+  const sep = (lines[0].match(/;/g) || []).length > (lines[0].match(/,/g) || []).length ? ';' : ',';
+  state.h = lines[0].split(sep).map(x => x.trim().replace(/^['"]|['"]$/g, ''));
+  state.r = lines.slice(1).map(line => {
+    const v = line.split(sep);
+    return Object.fromEntries(
+      state.h.map((h, i) => [h, (v[i] || '').trim().replace(/^['"]|['"]$/g, '')])
+    );
+  });
+
+  render();
+}
+
+function render() {
+  const selected = $('metric').value;
+  const v = values(selected);
+
+  if (state.chart) state.chart.destroy();
+
+  state.chart = new Chart($('chart'), {
+    type: 'line',
+    data: {
+      labels: state.r.map((_, i) => i),
+      datasets: [{
+        label: selected.toUpperCase(),
+        data: v,
+        borderColor: '#56d3a3',
+        pointRadius: 0,
+        tension: 0.15
+      }]
+    },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      interaction: { mode: 'index', intersect: false },
+      scales: {
+        x: { ticks: { color: '#8fa5c2' } },
+        y: { ticks: { color: '#8fa5c2' } }
+      },
+      plugins: {
+        legend: { labels: { color: '#fff' } }
+      }
+    }
+  });
+
+  const cards = ['rpm', 'map', 'ect', 'voltage'];
+  $('cards').innerHTML = cards.map(c => {
+    const s = stat(values(c));
+    return `<div class="card"><small>${c}</small><strong>${s ? s.avg.toFixed(1) : '—'}</strong><span class="muted">average</span></div>`;
+  }).join('');
+
+  const rows = ['rpm', 'map', 'ect', 'afr', 'stft', 'spark', 'voltage'];
+  $('summary').innerHTML = rows.map(c => {
+    const a = values(c);
+    const s = stat(a);
+    return s
+      ? `<tr><td>${c.toUpperCase()}</td><td>${s.min.toFixed(2)}</td><td>${s.avg.toFixed(2)}</td><td>${s.max.toFixed(2)}</td><td>${a.length}</td></tr>`
+      : '';
+  }).join('');
+
+  const warnings = [];
+  if (values('ect').some(x => x > 230)) warnings.push('<div class="alert warn">Coolant exceeds 230°F.</div>');
+  if (values('stft').some(x => Math.abs(x) > 15)) warnings.push('<div class="alert warn">Fuel trim exceeds ±15%.</div>');
+  if (values('voltage').some(x => x < 12)) warnings.push('<div class="alert warn">Voltage falls below 12 V.</div>');
+
+  $('alerts').innerHTML = warnings.join('') || '<div class=\"alert\">No basic threshold warnings detected. This is not a tune-validation result.</div>';
+}
+
+function demo() {
+  const headers = ['RPM', 'MAP', 'ECT', 'AFR', 'STFT', 'Spark', 'Battery Voltage'];
+  const out = [headers.join(',')];
+
+  for (let i = 0; i < 600; i++) {
+    const rpm = 750 + Math.round(Math.max(0, Math.sin(i / 35)) * 3000);
+    out.push([
+      rpm,
+      35 + rpm / 120,
+      185 + Math.sin(i / 80) * 3,
+      14.7 + Math.sin(i / 29) * 0.2,
+      Math.sin(i / 40) * 4,
+      18 + rpm / 500,
+      14.1
+    ].join(','));
+  }
+
+  parse(out.join('\n'));
+}
+
+$('file').onchange = e => {
+  const f = e.target.files[0];
+  if (f) f.text().then(parse);
+};
+
+$('metric').onchange = () => state.r.length && render();
+$('demo').onclick = demo;
+$('clear').onclick = () => {
+  state.h = [];
+  state.r = [];
+  $('cards').innerHTML = '';
+  $('summary').innerHTML = '';
+  $('alerts').textContent = 'Load a log to run checks.';
+  if (state.chart) state.chart.destroy();
+};
+
+['dragenter', 'dragover'].forEach(event => {
+  $('drop').addEventListener(event, e => {
+    e.preventDefault();
+    $('drop').classList.add('over');
+  });
+});
+
+$('drop').addEventListener('dragleave', () => $('drop').classList.remove('over'));
+$('drop').addEventListener('drop', e => {
+  e.preventDefault();
+  $('drop').classList.remove('over');
+  const f = e.dataTransfer.files[0];
+  if (f) f.text().then(parse);
+});
+</script>
+</body>
+</html>
